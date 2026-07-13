@@ -4,7 +4,9 @@ from g2p_en import G2p
 import difflib
 import os
 import math
-import nltk  # <-- NEW IMPORT
+import nltk
+from gtts import gTTS  
+import io              
 
 # ==========================================
 # 0. INITIALIZE SESSION STATE
@@ -13,13 +15,18 @@ st.set_page_config(page_title="MindBuzz Phonetic Prototype", page_icon="🧩")
 
 if 'attempt_history' not in st.session_state:
     st.session_state.attempt_history = []
+    
+# --- NEW: Tracking failures for the TTS Hint ---
+if 'fail_count' not in st.session_state:
+    st.session_state.fail_count = 0
+if 'current_target' not in st.session_state:
+    st.session_state.current_target = "Snake"
 
 # ==========================================
 # 1. DOWNLOAD NLTK DATA & CACHE MODELS
 # ==========================================
 @st.cache_resource
 def setup_nltk():
-    # Download the missing taggers and dictionaries NLTK needs
     nltk.download('averaged_perceptron_tagger', quiet=True)
     nltk.download('averaged_perceptron_tagger_eng', quiet=True) 
     nltk.download('cmudict', quiet=True)
@@ -31,26 +38,39 @@ def load_models():
     g2p_model = G2p() 
     return whisper_model, g2p_model
 
-# Run the setup before loading models
 with st.spinner("⏳ Setting up NLTK dictionaries..."):
     setup_nltk()
 
 with st.spinner("⏳ Loading Speech and Phoneme Models..."):
     whisper_model, g2p = load_models()
+
 # ==========================================
 # 2. UI HEADER
 # ==========================================
 st.title("🧩 MindBuzz: Phonetic Assessment")
 st.write("Record a word. The AI will break it down into phonemes (sounds) to check your exact pronunciation.")
 
-with st.spinner("⏳ Loading Speech and Phoneme Models..."):
-    whisper_model, g2p = load_models()
-
 # ==========================================
 # 3. USER INPUTS
 # ==========================================
-target_word = st.text_input("Target Word (e.g., Snake):", value="Snake")
+target_word = st.text_input("Target Word (e.g., Snake):", value=st.session_state.current_target)
+
+# Reset the fail counter if the user types in a new word
+if target_word.strip().lower() != st.session_state.current_target.strip().lower():
+    st.session_state.current_target = target_word
+    st.session_state.fail_count = 0
+
 audio_file = st.audio_input("Record Audio Attempt")
+
+# --- NEW: Display TTS Hint if they failed 3 times ---
+if st.session_state.fail_count >= 3:
+    st.info("💡 You've missed this a few times. Listen to how it is supposed to sound:")
+    # Generate the audio in memory (no need to save a file)
+    tts = gTTS(text=target_word, lang='en')
+    sound_fp = io.BytesIO()
+    tts.write_to_fp(sound_fp)
+    sound_fp.seek(0)
+    st.audio(sound_fp, format='audio/mp3')
 
 if st.button("Evaluate Pronunciation", type="primary"):
     
@@ -62,7 +82,6 @@ if st.button("Evaluate Pronunciation", type="primary"):
         with st.spinner("🤖 Extracting phonemes..."):
             vocab_prompt = f"{target_word}, take, make, bake, snack, snuck, fake."
             
-            # Step 1: Get the transcribed text from Whisper
             result = whisper_model.transcribe(
                 temp_path, 
                 fp16=False, 
@@ -73,7 +92,6 @@ if st.button("Evaluate Pronunciation", type="primary"):
             
             recognized_word = result["text"].strip().lower().replace(".", "").replace("!", "").replace("?", "")
             
-            # Whisper Confidence
             confidence_score = 0.0
             if len(result["segments"]) > 0:
                 logprob = result["segments"][0]["avg_logprob"]
@@ -83,16 +101,13 @@ if st.button("Evaluate Pronunciation", type="primary"):
                 recognized_word = "[Unclear]"
                 
             # ==========================================
-            # 4. PHONETIC EVALUATION LOGIC (THE UPGRADE)
+            # 4. PHONETIC EVALUATION LOGIC
             # ==========================================
             expected_clean = target_word.strip().lower()
             
-            # Convert both words to phonemes using CMUdict
-            # Example: "snake" -> ['S', 'N', 'EY1', 'K']
             target_phonemes = [p for p in g2p(expected_clean) if p.isalnum()]
             recognized_phonemes = [p for p in g2p(recognized_word) if p.isalnum()] if recognized_word != "[Unclear]" else []
             
-            # Calculate similarity based on SOUNDS, not letters
             phonetic_similarity = difflib.SequenceMatcher(None, target_phonemes, recognized_phonemes).ratio()
             
             st.divider()
@@ -104,12 +119,11 @@ if st.button("Evaluate Pronunciation", type="primary"):
             with col2:
                 st.warning(f"**Heard Word:**\n\n{recognized_word.capitalize()}\n\n🔊 `{' '.join(recognized_phonemes)}`")
             with col3:
-                # Pronunciation score based on phoneme overlap
                 score_color = "🟢" if phonetic_similarity > 0.8 else ("🟡" if phonetic_similarity > 0.4 else "🔴")
                 st.success(f"**Phonetic Score:**\n\n{score_color} {int(phonetic_similarity * 100)}%")
             
             # ==========================================
-            # 5. GRANULAR FEEDBACK
+            # 5. GRANULAR FEEDBACK & FAIL TRACKING
             # ==========================================
             is_success = False
             if phonetic_similarity == 1.0:
@@ -117,22 +131,24 @@ if st.button("Evaluate Pronunciation", type="primary"):
                 st.success(feedback)
                 st.balloons()
                 is_success = True
+                st.session_state.fail_count = 0  # Reset on success!
             elif recognized_word == "[Unclear]":
                 feedback = "🔊 I didn't hear anything. Let's try saying it out loud!"
                 st.error(feedback)
+                st.session_state.fail_count += 1
             elif phonetic_similarity >= 0.5:
-                # Find exactly which sound is missing (simplified check)
                 missing_sounds = [p for p in target_phonemes if p not in recognized_phonemes]
                 if missing_sounds:
                     feedback = f"💪 Close! But I missed the `{missing_sounds[0]}` sound. Let's try again!"
                 else:
                     feedback = f"💪 Almost there! You said '{recognized_word}'. Keep practicing."
                 st.warning(feedback)
+                st.session_state.fail_count += 1
             else:
                 feedback = f"🧠 Not quite! Listen closely to the sounds in '{target_word}' and try again."
                 st.error(feedback)
+                st.session_state.fail_count += 1
                 
-            # --- SAVE TO SESSION HISTORY ---
             st.session_state.attempt_history.append({
                 "target": target_word,
                 "recognized": recognized_word.capitalize(),
@@ -162,4 +178,5 @@ if len(st.session_state.attempt_history) > 0:
             
     if st.button("Clear History"):
         st.session_state.attempt_history = []
+        st.session_state.fail_count = 0
         st.rerun()
