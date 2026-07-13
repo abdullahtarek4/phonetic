@@ -4,6 +4,7 @@ from g2p_en import G2p
 import difflib
 import os
 import math
+import nltk  # <-- NEW IMPORT
 
 # ==========================================
 # 0. INITIALIZE SESSION STATE
@@ -14,14 +15,28 @@ if 'attempt_history' not in st.session_state:
     st.session_state.attempt_history = []
 
 # ==========================================
-# 1. CACHE THE AI & PHONEME MODELS
+# 1. DOWNLOAD NLTK DATA & CACHE MODELS
 # ==========================================
+@st.cache_resource
+def setup_nltk():
+    # Download the missing taggers and dictionaries NLTK needs
+    nltk.download('averaged_perceptron_tagger', quiet=True)
+    nltk.download('averaged_perceptron_tagger_eng', quiet=True) 
+    nltk.download('cmudict', quiet=True)
+    nltk.download('punkt', quiet=True)
+
 @st.cache_resource
 def load_models():
     whisper_model = whisper.load_model("base.en")
-    g2p_model = G2p() # CMUdict Grapheme-to-Phoneme converter
+    g2p_model = G2p() 
     return whisper_model, g2p_model
 
+# Run the setup before loading models
+with st.spinner("⏳ Setting up NLTK dictionaries..."):
+    setup_nltk()
+
+with st.spinner("⏳ Loading Speech and Phoneme Models..."):
+    whisper_model, g2p = load_models()
 # ==========================================
 # 2. UI HEADER
 # ==========================================
