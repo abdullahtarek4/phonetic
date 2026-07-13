@@ -3,3 +3,4 @@ openai-whisper
 g2p_en
 numpy
 nltk
+gtts
